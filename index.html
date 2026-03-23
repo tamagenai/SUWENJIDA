@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700&family=Noto+Serif+SC:wght@400;600;700;900&display=swap" rel="stylesheet">
+  <style>
+    body { background-color: #f5f2ed; color: #1a1a1a; font-family: sans-serif; }
+    .chinese-text { font-family: 'Noto Serif SC', serif; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    // ★GASを新しくデプロイし直した場合は、ここのURLも新しいものに変更してください
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbycXAhlc46BOT3rgOKPHX1Iy0lg4dnAP85KmbTKxvMVvdVJIx5frouKeye4laj4QXBi/exec";
+
+    const PALETTES =[
+      { chinese: "text-green-800", speaker: "text-green-600", border: "border-green-400" },
+      { chinese: "text-blue-800", speaker: "text-blue-600", border: "border-blue-400" },
+      { chinese: "text-teal-900", speaker: "text-teal-700", border: "border-teal-500" },
+      { chinese: "text-amber-800", speaker: "text-amber-600", border: "border-amber-500" },
+      { chinese: "text-purple-800", speaker: "text-purple-600", border: "border-purple-400" }
+    ];
+
+    const { useState, useRef, useEffect } = React;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    function App() {
+      const [sheets, setSheets] = useState([]);
+      const[currentSheet, setCurrentSheet] = useState("");
+      const [conversation, setConversation] = useState([]);
+      const[videoUrl, setVideoUrl] = useState("");
+      const [activeLine, setActiveLine] = useState(null);
+      const [isRecording, setIsRecording] = useState(false);
+      const [isPlaying, setIsPlaying] = useState(null);
+      const [evalResults, setEvalResults] = useState({});
+      const[isLoading, setIsLoading] = useState(true);
+      const [loadingEval, setLoadingEval] = useState(null);
+      
+      const [speakerColors, setSpeakerColors] = useState({});
+      
+      const recognition = useRef(null);
+
+      useEffect(() => {
+        const init = async () => {
+          try {
+            const sheetNames = await fetchFromGAS({ action: "getSheets" });
+            setSheets(sheetNames);
+            if (sheetNames.length > 0) loadLesson(sheetNames[0]);
+            else setIsLoading(false);
+          } catch (e) {
+            alert("スプレッドシートの読み込みに失敗: " + e.message);
+            setIsLoading(false);
+          }
+        };
+        init();
+
+        if (SpeechRecognition) {
+          recognition.current = new SpeechRecognition();
+          recognition.current.lang = 'zh-CN';
+          recognition.current.interimResults = false;
+          recognition.current.onend = () => setIsRecording(false);
+          recognition.current.onerror = (e) => {
+            alert("マイクエラー: " + e.error + "\n(※iPhoneの場合、https通信でないとマイクは動きません)");
+            setIsRecording(false);
+          };
+        }
+      },[]);
+
+      const loadLesson = async (sheetName) => {
+        setIsLoading(true);
+        setCurrentSheet(sheetName);
+        setEvalResults({});
+        try {
+          const data = await fetchFromGAS({ action: "getLesson", sheetName: sheetName });
+          
+          setConversation(data.conversation);
+          setVideoUrl(data.videoUrl);
+          
+          const uniqueSpeakers =[...new Set(data.conversation.map(item => item.speaker).filter(Boolean))];
+          const newSpeakerColors = {};
+          uniqueSpeakers.forEach((speaker, index) => {
+            newSpeakerColors[speaker] = PALETTES[index % PALETTES.length];
+          });
+          setSpeakerColors(newSpeakerColors);
+
+        } catch (e) {
+          alert("課の読み込みに失敗: " + e.message);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      const fetchFromGAS = async (payload) => {
+        const response = await fetch(GAS_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (result.status !== "success") throw new Error(result.message);
+        return result.data;
+      };
+
+      const playAudio = (line) => {
+        if (isPlaying) return;
+        
+        if (!window.speechSynthesis) {
+          alert("お使いのブラウザは音声読み上げに対応していません。");
+          return;
+        }
+
+        window.speechSynthesis.cancel();
+        setIsPlaying(line.id);
+
+        const utterance = new SpeechSynthesisUtterance(line.chinese);
+        utterance.lang = 'zh-CN'; 
+        utterance.rate = 0.9;     
+        
+        utterance.onend = () => setIsPlaying(null);
+        utterance.onerror = (e) => {
+          console.error("音声読み上げエラー:", e);
+          setIsPlaying(null);
+        };
+
+        window.speechSynthesis.speak(utterance);
+      };
+
+      const toggleMic = (line) => {
+        if (isRecording) {
+          recognition.current.stop();
+          return;
+        }
+        if (!recognition.current) {
+          alert("お使いのブラウザは音声認識に対応していません。");
+          return;
+        }
+        setActiveLine(line.id);
+        setIsRecording(true);
+
+        recognition.current.onresult = (event) => {
+          const transcript = event.results[0][0].transcript;
+          evaluate(line, transcript);
+        };
+        recognition.current.start();
+      };
+
+      const evaluate = async (line, transcript) => {
+        setLoadingEval(line.id);
+        try {
+          const res = await fetchFromGAS({ action: "evaluatePronunciation", targetText: line.chinese, userTranscript: transcript });
+          setEvalResults(prev => ({ ...prev,[line.id]: { ...res, transcript } }));
+        } catch(err) {
+          alert("評価エラー:\n" + err.message);
+        } finally {
+          setLoadingEval(null);
+        }
+      };
+
+      return (
+        <div className="p-4 md:p-10 max-w-2xl mx-auto">
+          <h1 className="text-4xl font-serif mb-6 text-center pb-2 font-bold">華雅 <span className="italic text-yellow-600">Kaga</span></h1>
+          
+          <div className="mb-8 text-center border-b pb-6">
+            <select 
+              value={currentSheet} 
+              onChange={(e) => loadLesson(e.target.value)}
+              className="px-4 py-2 border border-gray-300 rounded-lg text-lg font-bold bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-yellow-500"
+              disabled={isLoading}
+            >
+              {sheets.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+
+            {videoUrl && (
+              <div className="mt-4">
+                <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white font-bold rounded-full hover:bg-red-700 transition shadow-sm text-sm">
+                  ▶学習目標を見る
+                </a>
+              </div>
+            )}
+          </div>
+
+          {isLoading ? (
+            <div className="text-center text-gray-500 text-lg mt-10 animate-pulse font-bold">読み込み中...</div>
+          ) : (
+            <div className="space-y-8">
+              {conversation.map(line => {
+                const palette = speakerColors[line.speaker] || { chinese: "text-gray-900", speaker: "text-gray-500", border: "border-gray-300" };
+                
+                return (
+                <div key={line.id} className={`border-l-4 pl-4 py-4 bg-white shadow-sm rounded-r-lg transition-all ${activeLine === line.id ? 'border-yellow-500 ring-2 ring-yellow-200' : palette.border}`}>
+                  
+                  <p className={`text-xs font-bold uppercase tracking-widest mb-1 ${palette.speaker}`}>{line.speaker}</p>
+                  
+                  <div onClick={() => playAudio(line)} className="cursor-pointer hover:bg-gray-50 p-2 rounded transition">
+                    
+                    <p className={`text-4xl font-bold chinese-text mb-2 flex items-center gap-2 ${palette.chinese}`}>
+                      {line.chinese}
+                      {isPlaying === line.id && <span className="text-sm animate-pulse text-yellow-500 font-bold ml-2">Playing...</span>}
+                    </p>
+                    
+                    <p className="text-base font-semibold text-gray-500 mb-2 font-mono">{line.pinyin}</p>
+                    
+                    {/* ★追加：日本語グループ（文法ポイントと日本語訳をまとめる） */}
+                    <div className="border-t border-gray-200 pt-2 mt-2">
+                      
+                      {/* 文法ポイント（スプレッドシートのF列にデータがある場合のみ表示） */}
+                      {line.grammar && (
+                        <p className="text-sm font-bold text-blue-700 mb-1 flex items-start gap-2">
+                          <span className="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded whitespace-nowrap mt-0.5">文法</span>
+                          <span>{line.grammar}</span>
+                        </p>
+                      )}
+                      
+                      {/* 日本語訳 */}
+                      <p className="text-base font-bold text-gray-700">{line.japanese}</p>
+                    </div>
+
+                  </div>
+                  
+                  <div className="mt-4 flex items-center gap-4">
+                    <button 
+                      onClick={() => toggleMic(line)}
+                      className={`text-[11px] px-6 py-2 rounded-full font-bold transition-all shadow-sm ${isRecording && activeLine === line.id ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-800 text-white hover:bg-black'}`}
+                    >
+                      {isRecording && activeLine === line.id ? 'STOPPING...' : '🎤 PRACTICE'}
+                    </button>
+                    {loadingEval === line.id && <span className="text-sm font-bold text-gray-400 animate-spin">⌛ 評価中...</span>}
+                  </div>
+
+                  {evalResults[line.id] && (
+                    <div className="mt-4 p-4 bg-gray-50 rounded border-t border-gray-200 shadow-inner">
+                      <div className="flex flex-col gap-1 mb-3 border-b border-gray-300 pb-2">
+                        <span className="font-bold text-yellow-600 text-xl">AIスコア: {evalResults[line.id].score} 点</span>
+                        <span className="text-gray-600 font-bold text-lg">あなたの発音: "{evalResults[line.id].transcript}"</span>
+                      </div>
+                      <p className="text-gray-800 text-lg font-medium leading-relaxed">{evalResults[line.id].feedback}</p>
+                    </div>
+                  )}
+                </div>
+              )})}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
