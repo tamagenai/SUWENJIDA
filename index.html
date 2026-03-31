@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>【速問即答】会話</title>
+   <title>速問即答中国語</title>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/pinyin-pro"></script>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700&family=Noto+Serif+SC:wght@400;600;700;900&display=swap" rel="stylesheet">
   <style>
     body { background-color: #f5f2ed; color: #1a1a1a; font-family: sans-serif; }
@@ -18,7 +19,6 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    // ★GASを新しくデプロイし直した場合は、ここのURLも新しいものに変更してください
     const GAS_URL = "https://script.google.com/macros/s/AKfycbycXAhlc46BOT3rgOKPHX1Iy0lg4dnAP85KmbTKxvMVvdVJIx5frouKeye4laj4QXBi/exec";
 
     const PALETTES =[
@@ -28,6 +28,32 @@
       { chinese: "text-amber-800", speaker: "text-amber-600", border: "border-amber-500" },
       { chinese: "text-purple-800", speaker: "text-purple-600", border: "border-purple-400" }
     ];
+
+    // ★追加：2つの配列（ピンインの配列）を比較し、類似度を0〜100点で計算するアルゴリズム（レーベンシュタイン距離）
+    const calculateSimilarity = (arr1, arr2) => {
+      if (arr1.length === 0 && arr2.length === 0) return 100;
+      if (arr1.length === 0 || arr2.length === 0) return 0;
+
+      const matrix = Array(arr2.length + 1).fill(null).map(() => Array(arr1.length + 1).fill(null));
+
+      for (let i = 0; i <= arr1.length; i++) matrix[0][i] = i;
+      for (let j = 0; j <= arr2.length; j++) matrix[j][0] = j;
+
+      for (let j = 1; j <= arr2.length; j++) {
+        for (let i = 1; i <= arr1.length; i++) {
+          const indicator = arr1[i - 1] === arr2[j - 1] ? 0 : 1;
+          matrix[j][i] = Math.min(
+            matrix[j][i - 1] + 1, // 挿入
+            matrix[j - 1][i] + 1, // 削除
+            matrix[j - 1][i - 1] + indicator // 置換
+          );
+        }
+      }
+      const distance = matrix[arr2.length][arr1.length];
+      const maxLength = Math.max(arr1.length, arr2.length);
+      const similarity = ((maxLength - distance) / maxLength) * 100;
+      return Math.round(similarity);
+    };
 
     const { useState, useRef, useEffect } = React;
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -68,7 +94,7 @@
           recognition.current.interimResults = false;
           recognition.current.onend = () => setIsRecording(false);
           recognition.current.onerror = (e) => {
-            alert("マイクエラー: " + e.error + "\n(※iPhoneの場合、https通信でないとマイクは動きません)");
+            alert("マイクエラー: " + e.error + "\n(※iPhone/iPadの場合、設定からマイクを許可してください)");
             setIsRecording(false);
           };
         }
@@ -111,25 +137,20 @@
 
       const playAudio = (line) => {
         if (isPlaying) return;
-        
         if (!window.speechSynthesis) {
           alert("お使いのブラウザは音声読み上げに対応していません。");
           return;
         }
-
         window.speechSynthesis.cancel();
         setIsPlaying(line.id);
-
         const utterance = new SpeechSynthesisUtterance(line.chinese);
         utterance.lang = 'zh-CN'; 
         utterance.rate = 0.9;     
-        
         utterance.onend = () => setIsPlaying(null);
         utterance.onerror = (e) => {
           console.error("音声読み上げエラー:", e);
           setIsPlaying(null);
         };
-
         window.speechSynthesis.speak(utterance);
       };
 
@@ -155,18 +176,88 @@
       const evaluate = async (line, transcript) => {
         setLoadingEval(line.id);
         try {
-          const res = await fetchFromGAS({ action: "evaluatePronunciation", targetText: line.chinese, userTranscript: transcript });
-          setEvalResults(prev => ({ ...prev,[line.id]: { ...res, transcript } }));
+          // ★変更：記号やスペースを完全に除去して純粋な文字だけにする
+          const normalizeText = (text) => {
+            if (!text) return "";
+            return text.replace(/[\s　，。？！、：；“”‘’（）\(\)\[\]【】,\.\?!:;"']/g, '');
+          };
+
+          const targetClean = normalizeText(line.chinese);
+          const userClean = normalizeText(transcript);
+
+          // ユーザーの表示用ピンイン
+          const userPinyinDisplay = pinyinPro.pinyin(transcript, { toneType: 'symbol' });
+
+          let score = 0;
+          let feedback = "";
+
+          // 1. 簡体字が完全一致するかチェック
+          if (targetClean === userClean) {
+            score = 100;
+            feedback = "完璧です！正しく発音されました。";
+          } else {
+            // 2. 一致しない場合、ピンインを配列化して比較
+            // 例: "你好" -> ["nǐ", "hǎo"]
+            const targetPinyinArr = pinyinPro.pinyin(targetClean, { type: 'array', toneType: 'symbol' });
+            const userPinyinArr = pinyinPro.pinyin(userClean, { type: 'array', toneType: 'symbol' });
+
+            // レーベンシュタイン距離アルゴリズムで類似度を計算
+            score = calculateSimilarity(targetPinyinArr, userPinyinArr);
+
+            // スコアに応じたフィードバック
+            if (score === 100) {
+              feedback = "完璧です！正しく発音されました。";
+            } else if (score >= 80) {
+              feedback = "とても良いです！あと少し！";
+            } else if (score >= 50) {
+              feedback = "惜しいです。ピンインを確認してもう一度！";
+            } else {
+              feedback = "もっと発音の練習をしましょう。";
+            }
+          }
+          
+          setTimeout(() => {
+            setEvalResults(prev => ({ ...prev,[line.id]: { score, feedback, transcript, userPinyinDisplay } }));
+            setLoadingEval(null);
+          }, 600);
+
         } catch(err) {
           alert("評価エラー:\n" + err.message);
-        } finally {
           setLoadingEval(null);
         }
       };
 
+      // ★追加：練習記録をクリップボードにコピーする機能
+      const copyToClipboard = () => {
+        if (Object.keys(evalResults).length === 0) {
+          alert("まだ練習記録がありません。");
+          return;
+        }
+
+        let textToCopy = `【${currentSheet} 練習記録】\n\n`;
+        
+        conversation.forEach(line => {
+          const result = evalResults[line.id];
+          if (result) {
+            textToCopy += `■ 目標: ${line.chinese}\n`;
+            textToCopy += `  ピンイン: ${line.pinyin}\n`;
+            textToCopy += `  日本語訳: ${line.japanese}\n`;
+            textToCopy += `  あなたの発音: ${result.transcript}\n`;
+            textToCopy += `  あなたのピンイン: ${result.userPinyinDisplay}\n`;
+            textToCopy += `  スコア: ${result.score}点\n\n`;
+          }
+        });
+
+        navigator.clipboard.writeText(textToCopy).then(() => {
+          alert("練習記録をクリップボードにコピーしました！\n先生に提出（ペースト）してください。");
+        }).catch(err => {
+          alert("コピーに失敗しました: " + err);
+        });
+      };
+
       return (
         <div className="p-4 md:p-10 max-w-2xl mx-auto">
-          <h1 className="text-4xl font-serif mb-6 text-center pb-2 font-bold">華雅 <span className="italic text-yellow-600">Kaga</span></h1>
+         <h1 className="text-4xl font-serif mb-6 text-center pb-2 font-bold">速問即答中国語<span className="italic text-yellow-600">会話</span></h1>
           
           <div className="mb-8 text-center border-b pb-6">
             <select 
@@ -178,13 +269,24 @@
               {sheets.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
 
-            {videoUrl && (
-              <div className="mt-4">
+            {/* ★追加：動画ボタンと練習記録コピーボタンを並べて表示 */}
+            <div className="mt-4 flex flex-wrap justify-center gap-4">
+              {videoUrl && (
                 <a href={videoUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white font-bold rounded-full hover:bg-red-700 transition shadow-sm text-sm">
-                  ▶学習目標を見る
+                  ▶ 画像を見る
                 </a>
-              </div>
-            )}
+              )}
+              
+              {/* 評価結果が1つ以上ある場合のみコピーボタンを表示 */}
+              {Object.keys(evalResults).length > 0 && (
+                <button 
+                  onClick={copyToClipboard}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white font-bold rounded-full hover:bg-blue-700 transition shadow-sm text-sm"
+                >
+                  📋 音声入力練習記録をコピー
+                </button>
+              )}
+            </div>
           </div>
 
           {isLoading ? (
@@ -208,18 +310,13 @@
                     
                     <p className="text-base font-semibold text-gray-500 mb-2 font-mono">{line.pinyin}</p>
                     
-                    {/* ★追加：日本語グループ（文法ポイントと日本語訳をまとめる） */}
                     <div className="border-t border-gray-200 pt-2 mt-2">
-                      
-                      {/* 文法ポイント（スプレッドシートのF列にデータがある場合のみ表示） */}
                       {line.grammar && (
                         <p className="text-sm font-bold text-blue-700 mb-1 flex items-start gap-2">
                           <span className="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded whitespace-nowrap mt-0.5">文法</span>
                           <span>{line.grammar}</span>
                         </p>
                       )}
-                      
-                      {/* 日本語訳 */}
                       <p className="text-base font-bold text-gray-700">{line.japanese}</p>
                     </div>
 
@@ -238,8 +335,9 @@
                   {evalResults[line.id] && (
                     <div className="mt-4 p-4 bg-gray-50 rounded border-t border-gray-200 shadow-inner">
                       <div className="flex flex-col gap-1 mb-3 border-b border-gray-300 pb-2">
-                        <span className="font-bold text-yellow-600 text-xl">AIスコア: {evalResults[line.id].score} 点</span>
+                        <span className="font-bold text-yellow-600 text-xl">スコア: {evalResults[line.id].score} 点</span>
                         <span className="text-gray-600 font-bold text-lg">あなたの発音: "{evalResults[line.id].transcript}"</span>
+                        <span className="text-gray-500 font-mono text-base">ピンイン: {evalResults[line.id].userPinyinDisplay}</span>
                       </div>
                       <p className="text-gray-800 text-lg font-medium leading-relaxed">{evalResults[line.id].feedback}</p>
                     </div>
