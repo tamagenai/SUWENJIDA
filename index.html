@@ -6,9 +6,11 @@
    <title>速問即答中国語</title>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+   <!-- ★修正：Babelのバージョンを 7.23.6 に固定（自動アップデートによるエラーを防ぐため） -->
+  <script src="https://unpkg.com/@babel/standalone@7.23.6/babel.min.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/pinyin-pro"></script>
+ <!-- ★修正：pinyin-proのバージョンも固定しておくと今後安心です -->
+  <script src="https://unpkg.com/pinyin-pro@3.28.1/dist/index.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700&family=Noto+Serif+SC:wght@400;600;700;900&display=swap" rel="stylesheet">
   <style>
     body { background-color: #f5f2ed; color: #1a1a1a; font-family: sans-serif; }
