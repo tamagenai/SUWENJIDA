@@ -100,6 +100,13 @@
             setIsRecording(false);
           };
         }
+        // ★追加1：iOS対策として、アプリ起動時に音声リストをあらかじめ読み込んでおく
+        if (window.speechSynthesis) {
+          window.speechSynthesis.getVoices();
+          window.speechSynthesis.onvoiceschanged = () => {
+            window.speechSynthesis.getVoices();
+          };
+        }
       },[]);
 
       const loadLesson = async (sheetName) => {
@@ -147,7 +154,14 @@
         setIsPlaying(line.id);
         const utterance = new SpeechSynthesisUtterance(line.chinese);
         utterance.lang = 'zh-CN'; 
-        utterance.rate = 0.9;     
+        utterance.rate = 0.9; 
+        // ★追加2：中国語の音声エンジンを明示的に探してセットする（iOS対策）
+        const voices = window.speechSynthesis.getVoices();
+        // 'zh-CN', 'zh-TW', 'zh_CN' などの中国語音声を探す
+        const chineseVoice = voices.find(voice => voice.lang.replace('_', '-').toLowerCase().startsWith('zh'));
+        if (chineseVoice) {
+          utterance.voice = chineseVoice;
+        }    
         utterance.onend = () => setIsPlaying(null);
         utterance.onerror = (e) => {
           console.error("音声読み上げエラー:", e);
